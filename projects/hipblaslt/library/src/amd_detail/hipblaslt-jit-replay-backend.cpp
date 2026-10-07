@@ -121,7 +121,7 @@ namespace hipblaslt_ext::experimental::jit::replay
         diagnostics = {"replay", ""};
         try
         {
-            backend = detail::BackendAccess::make(hipblaslt_jit::makeJit(makeBackend(options)));
+            backend = Backend::create(hipblaslt_jit::makeJit(makeBackend(options)));
             return HIPBLAS_STATUS_SUCCESS;
         }
         catch(const std::bad_alloc&)

@@ -127,11 +127,11 @@ namespace hipblaslt_jit
         JitLibrary& operator=(const JitLibrary&) = delete;
         ~JitLibrary();
 
-        // HIPBLASLT_JIT_LIBRARY_PATH, or /tmp/hipblaslt-jit-<uid>
-        // (%TEMP%\hipblaslt-jit-<user> on Windows).
+        // /tmp/hipblaslt-jit-<uid> (%TEMP%\hipblaslt-jit-<user> on Windows).
+        // HIPBLASLT_JIT_LIBRARY_PATH is applied by process(), not here.
         static std::filesystem::path defaultRoot();
-        // Rooted at defaultRoot(). Never destroyed, so views and adapters stay
-        // valid until exit.
+        // Rooted at HIPBLASLT_JIT_LIBRARY_PATH, or defaultRoot(). Never
+        // destroyed, so views and adapters stay valid until exit.
         static JitLibrary& process();
 
         const std::filesystem::path& root() const noexcept;

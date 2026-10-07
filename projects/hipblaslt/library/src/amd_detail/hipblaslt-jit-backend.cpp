@@ -71,7 +71,15 @@ namespace hipblaslt_jit
 
     JitLibrary& JitLibrary::process()
     {
-        static auto* library = new JitLibrary(defaultRoot(), [](int device, CacheKey& key) {
+        // The library path is read here, at the process edge, and passed in.
+        auto root = defaultRoot();
+        if(const char* path = rocblaslt_secure_getenv("HIPBLASLT_JIT_LIBRARY_PATH"); path && *path)
+        {
+            std::error_code error;
+            auto            absolute = std::filesystem::absolute(std::filesystem::u8path(path), error);
+            root = error ? std::filesystem::u8path(path) : absolute;
+        }
+        static auto* library = new JitLibrary(std::move(root), [](int device, CacheKey& key) {
             DeviceTarget target;
             auto         status = DeviceTarget::make(device, target);
             if(status.ok())
@@ -207,8 +215,8 @@ namespace hipblaslt_ext::experimental
                                      PreparedQuery&     prepared,
                                      Diagnostics&       diagnostics)
         {
-            prepared.jit       = BackendAccess::get(backend);
-            prepared.operation = RequestAccess::get(request);
+            prepared.jit       = backend.get();
+            prepared.operation = request.get();
             if(!prepared.operation || !prepared.jit)
             {
                 diagnostics.message = "A valid request and backend are required";
@@ -362,7 +370,7 @@ namespace hipblaslt_ext::experimental
                     diagnostics.message = "Empty output needs no GEMM algorithm";
                     return HIPBLAS_STATUS_NOT_SUPPORTED;
                 }
-                request = detail::RequestAccess::make(std::move(operation));
+                request = Request::create(std::move(operation));
                 return HIPBLAS_STATUS_SUCCESS;
             }
             catch(const std::bad_alloc&)
@@ -414,7 +422,7 @@ namespace hipblaslt_ext::experimental
                 compiled->libraryIndex   = indices.front();
                 compiled->workspaceBytes = detail::publishedWorkspace(
                     compiled->target, *compiled->request, compiled->libraryIndex);
-                solution = detail::SolutionAccess::make(std::move(compiled));
+                solution = Solution::create(std::move(compiled));
                 return HIPBLAS_STATUS_SUCCESS;
             }
             catch(const std::bad_alloc&)
@@ -486,7 +494,7 @@ namespace hipblaslt_ext::experimental
             };
             try
             {
-                auto compiled = detail::SolutionAccess::get(solution);
+                auto compiled = solution.get();
                 if(!compiled || !hipblaslt_jit::isJitIndex(compiled->libraryIndex))
                     return finish(HIPBLAS_STATUS_INVALID_VALUE);
                 diagnostics.backend = compiled->jit->components().backend->info().name;
@@ -547,7 +555,7 @@ namespace hipblaslt_jit
                             << diagnostics.message << std::endl;
                         return;
                     }
-                    jit = hipblaslt_ext::experimental::jit::detail::BackendAccess::get(backend);
+                    jit = backend.get();
                 }
                 catch(const std::exception& error)
                 {
@@ -583,8 +591,8 @@ namespace hipblaslt_jit
     {
         static std::once_flag once;
         std::call_once(once, [] {
-            const char* value = rocblaslt_secure_getenv("HIPBLASLT_JIT");
-            std::cerr << "hipblaslt warning: HIPBLASLT_JIT=" << (value ? value : "");
+            std::cerr << "hipblaslt warning: HIPBLASLT_JIT="
+                      << (mode() == Mode::Forced ? "2" : "1");
             if(mode() == Mode::Forced)
                 std::cerr << " has no JIT library; heuristic queries return no solutions"
                           << std::endl;

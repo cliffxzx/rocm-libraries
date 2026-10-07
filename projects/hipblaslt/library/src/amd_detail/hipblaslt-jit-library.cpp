@@ -7,7 +7,6 @@
 #include "hipblaslt-jit-json.hpp"
 #include "hipblaslt-jit-msgpack.hpp"
 #include "hipblaslt-jit-problem-type.hpp"
-#include "rocblaslt_secure_env.hpp"
 #include <Tensile/CachingLibrary.hpp>
 #include <Tensile/DataTypes.hpp>
 #include <Tensile/ExactLogicLibrary.hpp>
@@ -610,12 +609,6 @@ namespace hipblaslt_jit
 
     fs::path JitLibrary::defaultRoot()
     {
-        if(const char* path = rocblaslt_secure_getenv("HIPBLASLT_JIT_LIBRARY_PATH"); path && *path)
-        {
-            std::error_code error;
-            auto            absolute = fs::absolute(fs::u8path(path), error);
-            return error ? fs::u8path(path) : absolute;
-        }
 #ifdef _WIN32
         std::error_code error;
         const auto      temporary = fs::temp_directory_path(error);

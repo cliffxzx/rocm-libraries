@@ -7,6 +7,7 @@
 #include "hipblaslt-jit-json.hpp"
 #include "hipblaslt-jit-msgpack.hpp"
 #include "hipblaslt-jit-problem-type.hpp"
+#include "rocblaslt_secure_env.hpp"
 #include <Tensile/CachingLibrary.hpp>
 #include <Tensile/DataTypes.hpp>
 #include <Tensile/ExactLogicLibrary.hpp>
@@ -1088,10 +1089,10 @@ namespace hipblaslt_jit
 
     namespace
     {
-        void loadHelpers(JitLibrary::Directory&             directory,
-                         const fs::path&                    slice,
+        void loadHelpers(const fs::path&                    slice,
                          TensileLite::hip::SolutionAdapter* adapter,
-                         const std::string&                 codeObjectFilename)
+                         const std::string&                 codeObjectFilename,
+                         const fs::path&                    helperDirectory)
         {
             if(!adapter)
                 return;
@@ -1106,7 +1107,8 @@ namespace hipblaslt_jit
                || !msgpack_io::readNames(bytes, names).ok())
                 return;
             for(const auto& name : names)
-                static_cast<void>(adapter->loadCodeObjectFile(directory.helperFile(name).string()));
+                static_cast<void>(adapter->loadCodeObjectFile(
+                    (helperDirectory / (filesystemLiteral(name) + ".co")).string()));
         }
     }
 
@@ -1171,7 +1173,11 @@ namespace hipblaslt_jit
                         const auto prefix = slice->master->libraryMapping.at(index);
                         if(!helpersReadable(slice->path, prefix + ".co"))
                             continue;
-                        loadHelpers(*directory, slice->path, adapter, prefix + ".co");
+                        loadHelpers(slice->path,
+                                    adapter,
+                                    prefix + ".co",
+                                    directory->path / "helpers"
+                                        / filesystemLiteral(directory->identity.backendId));
                         view = {slice->master, adapter};
                         return {};
                     }

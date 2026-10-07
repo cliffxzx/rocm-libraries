@@ -415,7 +415,7 @@ namespace hipblaslt_jit::msgpack_io
             std::vector<std::string> result;
             result.reserve(root.via.array.size);
             for(uint32_t i = 0; i < root.via.array.size; ++i)
-                result.push_back(text(root.via.array.ptr[i], "A name"));
+                result.push_back(std::string(text(root.via.array.ptr[i], "A name")));
             names = std::move(result);
         });
     }

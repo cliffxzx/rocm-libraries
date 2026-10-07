@@ -137,15 +137,22 @@ namespace hipblaslt_jit
         const std::filesystem::path& root() const noexcept;
         std::filesystem::path        directory(const CacheKey& key) const;
 
+        // Publishes the shortfall. indices receives new library indices. failure
+        // is set when nothing new was published.
+        using GenerateMissing = std::function<void(size_t                          count,
+                                                   const std::vector<std::string>& excludeKernels,
+                                                   std::vector<int32_t>&           indices,
+                                                   Status&                         failure)>;
+
         // What findTopSolutions may do. Set on the calling thread before the
         // library call. A capturing stream sets allowGeneration false so a hit
         // can return and a miss does not build. endQuery clears it.
-        void beginQuery(bool                                              allowGeneration,
-                        std::shared_ptr<const Jit>                        jit,
-                        const DeviceTarget&                               target,
-                        size_t                                            workspace,
-                        std::vector<std::string>                          excludeKernels,
-                        std::shared_ptr<const OperationRequest>           operation);
+        void beginQuery(bool                     allowGeneration,
+                        const DeviceTarget&      target,
+                        const BackendInfo&       backend,
+                        size_t                   workspace,
+                        std::vector<std::string> excludeKernels,
+                        GenerateMissing          generate);
         void endQuery();
         // Failure from the query in progress, or success when there is none.
         Status queryStatus() const;

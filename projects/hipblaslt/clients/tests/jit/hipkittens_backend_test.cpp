@@ -128,7 +128,7 @@ namespace
         jit::Backend     backend;
         BLAS(hk::createBackend({}, backend, diagnostics));
         makeProblem(handle, desc, M, N, K, request, diagnostics);
-        const auto operation = jit::detail::RequestAccess::get(request);
+        const auto operation = request.get();
         const auto gemm      = dynamic_cast<const jit::detail::GemmRequest*>(operation.get());
         {
             INFO(("request is not a GEMM"));
@@ -141,7 +141,7 @@ namespace
         HIP(hipGetDevice(&device));
         HIP(hipStreamCreate(&stream));
         problem.stream = stream;
-        auto capturing = jit::detail::RequestAccess::make(
+        auto capturing = jit::Request::create(
             std::make_shared<jit::detail::GemmRequest>(problem));
         Device marker(4);
         HIP(hipStreamBeginCapture(stream, hipStreamCaptureModeRelaxed));
@@ -181,7 +181,7 @@ namespace
         jit::Backend     backend;
         BLAS(hk::createBackend({}, backend, diagnostics));
         makeProblem(handle, desc, M, N, K, request, diagnostics);
-        const auto operation = jit::detail::RequestAccess::get(request);
+        const auto operation = request.get();
         const auto gemm      = dynamic_cast<const jit::detail::GemmRequest*>(operation.get());
         {
             INFO(("request is not a GEMM"));
@@ -194,7 +194,7 @@ namespace
         HIP(hipGetDevice(&device));
         HIP(hipStreamCreate(&stream));
         problem.stream = stream;
-        auto capturing = jit::detail::RequestAccess::make(
+        auto capturing = jit::Request::create(
             std::make_shared<jit::detail::GemmRequest>(problem));
         Device marker(4);
         HIP(hipStreamBeginCapture(stream, hipStreamCaptureModeRelaxed));

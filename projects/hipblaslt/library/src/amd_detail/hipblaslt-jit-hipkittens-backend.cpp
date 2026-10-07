@@ -22,6 +22,6 @@ namespace hipblaslt_jit
             std::cerr << "hipblaslt warning: " << diagnostics.message << std::endl;
             return nullptr;
         }
-        return hipblaslt_ext::experimental::jit::detail::BackendAccess::get(backend);
+        return backend.get();
     }
 }

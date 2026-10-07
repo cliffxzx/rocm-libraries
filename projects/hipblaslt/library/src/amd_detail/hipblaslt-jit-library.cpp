@@ -14,6 +14,7 @@
 #include <Tensile/hip/HipSolutionAdapter.hpp>
 #include <algorithm>
 #include <cctype>
+#include <climits>
 #include <cstring>
 #include <fstream>
 #include <new>
@@ -934,5 +935,193 @@ namespace hipblaslt_jit
             return {};
         });
         return solution;
+    }
+
+    namespace
+    {
+        struct ActiveQuery
+        {
+            bool                                    engaged = false;
+            bool                                    allowGeneration = false;
+            std::shared_ptr<const Jit>              jit;
+            DeviceTarget                            target;
+            size_t                                  workspace = 0;
+            std::vector<std::string>                exclude;
+            std::shared_ptr<const OperationRequest> operation;
+            Status                                  failure;
+        };
+
+        ActiveQuery& activeQuery()
+        {
+            thread_local ActiveQuery query;
+            return query;
+        }
+
+        TensileLite::SolutionVector<TensileLite::ContractionSolution>
+            solutionsFor(JitLibrary&                                  library,
+                         const TensileLite::ContractionProblemGemm&   problem,
+                         const TensileLite::Hardware&                 hardware,
+                         int                                          numSolutions,
+                         bool                                         generate)
+        {
+            using Solution = TensileLite::ContractionSolution;
+            TensileLite::SolutionVector<Solution> result;
+            auto&                                 query = activeQuery();
+            if(!query.engaged || !query.jit || numSolutions <= 0 || problem.groupedGemm())
+                return result;
+            auto problemCopy = problem;
+            problemCopy.setWorkspaceSize(query.workspace);
+            auto components = query.jit->components();
+            if(!components.backend)
+                return result;
+            const auto key = CacheKey::make(query.target, components.backend->info(), jitCodeObjectVersion);
+            std::vector<int32_t> indices;
+            query.failure = library.lookup(key,
+                                           query.target.device,
+                                           problemCopy,
+                                           hardware,
+                                           static_cast<size_t>(numSolutions),
+                                           query.exclude,
+                                           indices);
+            const bool miss = indices.size() < static_cast<size_t>(numSolutions);
+            if(generate && query.allowGeneration && miss && query.operation && query.failure.ok())
+            {
+                if(!components.store && components.backend)
+                    components.store = makeLibraryStore(
+                        library, components.backend->info(), jitCodeObjectVersion);
+                auto exclude = query.exclude;
+                for(auto index : indices)
+                {
+                    Status why;
+                    if(auto solution
+                       = library.solutionByIndex(query.target.device, hardware, index, why))
+                        if(!excludedKernel(exclude, solution->kernelName))
+                            exclude.push_back(solution->kernelName);
+                }
+                try
+                {
+                    const Jit generator(components);
+                    auto      outcome = generator.generate(*query.operation,
+                                                      query.target,
+                                                      static_cast<size_t>(numSolutions) - indices.size(),
+                                                      query.workspace,
+                                                      exclude);
+                    for(auto index : outcome.indices)
+                        if(std::find(indices.begin(), indices.end(), index) == indices.end())
+                            indices.push_back(index);
+                    if(indices.empty() && !outcome.failures.empty())
+                        query.failure = outcome.failures.front();
+                }
+                catch(const std::exception& error)
+                {
+                    query.failure = {Status::Code::Failed, Stage::Generate, error.what()};
+                }
+            }
+            if(indices.size() > static_cast<size_t>(numSolutions))
+                indices.resize(static_cast<size_t>(numSolutions));
+            for(auto index : indices)
+            {
+                Status why;
+                if(auto solution = library.solutionByIndex(query.target.device, hardware, index, why))
+                    result.push_back(std::move(solution));
+            }
+            return result;
+        }
+    }
+
+    void JitLibrary::beginQuery(bool                                    allowGeneration,
+                                std::shared_ptr<const Jit>              jit,
+                                const DeviceTarget&                     target,
+                                size_t                                  workspace,
+                                std::vector<std::string>                excludeKernels,
+                                std::shared_ptr<const OperationRequest> operation)
+    {
+        auto& query          = activeQuery();
+        query                = {};
+        query.engaged        = true;
+        query.allowGeneration = allowGeneration;
+        query.jit            = std::move(jit);
+        query.target         = target;
+        query.workspace      = workspace;
+        query.exclude        = std::move(excludeKernels);
+        query.operation      = std::move(operation);
+    }
+
+    void JitLibrary::endQuery()
+    {
+        activeQuery() = {};
+    }
+
+    Status JitLibrary::queryStatus() const
+    {
+        return activeQuery().failure;
+    }
+
+    std::shared_ptr<TensileLite::ContractionSolution>
+        JitLibrary::getSolutionByIndex(TensileLite::ContractionProblemGemm const&,
+                                       TensileLite::Hardware const& hardware,
+                                       const int                    index) const
+    {
+        const auto& query = activeQuery();
+        if(!query.engaged)
+            return {};
+        Status why;
+        return const_cast<JitLibrary*>(this)->solutionByIndex(query.target.device, hardware, index, why);
+    }
+
+    std::shared_ptr<TensileLite::ContractionSolution>
+        JitLibrary::findBestSolution(TensileLite::ContractionProblemGemm const& problem,
+                                     TensileLite::Hardware const&               hardware,
+                                     double*                                    fitness) const
+    {
+        auto found = findTopSolutions(problem, hardware, 1);
+        if(fitness)
+            *fitness = found.empty() ? 0.0 : 1.0;
+        return found.empty() ? nullptr : found.front();
+    }
+
+    TensileLite::SolutionSet<TensileLite::ContractionSolution>
+        JitLibrary::findAllSolutions(TensileLite::ContractionProblemGemm const& problem,
+                                     TensileLite::Hardware const&               hardware,
+                                     TensileLite::SolutionLibrarySearchType) const
+    {
+        auto found = solutionsFor(const_cast<JitLibrary&>(*this), problem, hardware, INT32_MAX, false);
+        TensileLite::SolutionSet<TensileLite::ContractionSolution> result;
+        result.insert(found.begin(), found.end());
+        return result;
+    }
+
+    TensileLite::SolutionSet<TensileLite::ContractionSolution> JitLibrary::findAllSolutionsGroupedGemm(
+        std::vector<TensileLite::ContractionProblemGemm> const&,
+        TensileLite::Hardware const&,
+        TensileLite::SolutionLibrarySearchType) const
+    {
+        return {};
+    }
+
+    std::string JitLibrary::type() const
+    {
+        return "Jit";
+    }
+
+    std::string JitLibrary::description() const
+    {
+        return "JIT solution library";
+    }
+
+    TensileLite::SolutionVector<TensileLite::ContractionSolution>
+        JitLibrary::findTopSolutions(TensileLite::ContractionProblemGemm const& problem,
+                                     TensileLite::Hardware const&               hardware,
+                                     int                                        numSolutions) const
+    {
+        return solutionsFor(const_cast<JitLibrary&>(*this), problem, hardware, numSolutions, true);
+    }
+
+    TensileLite::SolutionVector<TensileLite::ContractionSolution> JitLibrary::findTopSolutionsGroupedGemm(
+        std::vector<TensileLite::ContractionProblemGemm> const&,
+        TensileLite::Hardware const&,
+        int) const
+    {
+        return {};
     }
 }

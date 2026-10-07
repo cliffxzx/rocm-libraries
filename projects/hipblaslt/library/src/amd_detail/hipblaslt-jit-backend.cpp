@@ -248,7 +248,7 @@ namespace hipblaslt_ext::experimental
             return solution->requiredWorkspaceSize(problem, *target.hardware);
         }
 
-        // Look up the JIT solution library, then publish anything still missing.
+        // Look up JitLibrary::findTopSolutions, which publishes on a miss.
         // A capturing stream may return a hit and does not start a build.
         hipblasStatus_t
             lookupThenPublish(const std::shared_ptr<const hipblaslt_jit::Jit>& jit,
@@ -261,67 +261,57 @@ namespace hipblaslt_ext::experimental
                               Diagnostics&                                     diagnostics)
         {
             indices.clear();
-            if(!jit || !operation)
+            if(!jit || !operation || !target.hardware)
             {
                 diagnostics.message = "A valid request and backend are required";
                 return HIPBLAS_STATUS_INVALID_VALUE;
             }
-            auto components = jit->components();
-            if(!components.store)
-                components.store = hipblaslt_jit::makeLibraryStore(
-                    hipblaslt_jit::JitLibrary::process(),
-                    components.backend->info(),
-                    hipblaslt_jit::jitCodeObjectVersion);
-            auto status = components.store->lookup(
-                *operation, target, count, workspaceLimit, excludeKernels, indices);
-            const auto  found = indices.size();
-            const auto* gemm  = dynamic_cast<const GemmRequest*>(operation.get());
-            const bool  capturing = gemm && streamIsCapturing(gemm->problem.stream);
-            if(status.ok() && found < count && capturing)
+            const auto* gemm = dynamic_cast<const GemmRequest*>(operation.get());
+            if(!gemm)
             {
-                if(indices.empty())
+                diagnostics.message = "The JIT solution library holds GEMM solutions";
+                return HIPBLAS_STATUS_NOT_SUPPORTED;
+            }
+            const bool capturing = streamIsCapturing(gemm->problem.stream);
+            auto       problem   = hipblaslt_jit::lowerForJit(*gemm);
+            auto&      library   = hipblaslt_jit::JitLibrary::process();
+            library.beginQuery(!capturing,
+                               jit,
+                               target,
+                               workspaceLimit,
+                               excludeKernels,
+                               operation);
+            struct Guard
+            {
+                hipblaslt_jit::JitLibrary& library;
+                ~Guard()
                 {
-                    diagnostics.message = captureSkipMessage(
-                        gemm->problem.m, gemm->problem.n, gemm->problem.k);
-                    return HIPBLAS_STATUS_NOT_SUPPORTED;
+                    library.endQuery();
                 }
-            }
-            else if(status.ok() && found < count)
+            } guard{library};
+            const auto foundBefore = hipblaslt_jit::generationCount();
+            auto       solutions   = library.findTopSolutions(
+                problem, *target.hardware, static_cast<int>(count));
+            const auto status = library.queryStatus();
+            for(const auto& solution : solutions)
+                if(solution && hipblaslt_jit::isJitIndex(solution->index))
+                    indices.push_back(solution->index);
+            if(capturing && indices.empty() && status.ok())
             {
-                std::vector<std::string> exclude = excludeKernels;
-                auto&                    library = hipblaslt_jit::JitLibrary::process();
-                for(auto index : indices)
-                {
-                    hipblaslt_jit::Status why;
-                    if(auto solution
-                       = library.solutionByIndex(target.device, *target.hardware, index, why))
-                        if(!hipblaslt_jit::excludedKernel(exclude, solution->kernelName))
-                            exclude.push_back(solution->kernelName);
-                }
-                const hipblaslt_jit::Jit generator(std::move(components));
-                auto outcome = generator.generate(
-                    *operation, target, count - found, workspaceLimit, exclude);
-                for(auto index : outcome.indices)
-                    if(std::find(indices.begin(), indices.end(), index) == indices.end())
-                        indices.push_back(index);
-                if(outcome.indices.empty())
-                    status = outcome.failures.empty()
-                                 ? hipblaslt_jit::Status{hipblaslt_jit::Status::Code::Failed,
-                                                         hipblaslt_jit::Stage::Publish,
-                                                         "Nothing was published"}
-                                 : std::move(outcome.failures.front());
-                else
-                    diagnostics.message = std::move(outcome.summary);
+                diagnostics.message
+                    = captureSkipMessage(gemm->problem.m, gemm->problem.n, gemm->problem.k);
+                return HIPBLAS_STATUS_NOT_SUPPORTED;
             }
-            if(!status.ok())
+            if(!status.ok() && indices.empty())
             {
-                diagnostics.message = std::move(status.message);
-                if(indices.empty())
-                    return toHipStatus(status.code);
+                diagnostics.message = status.message;
+                return toHipStatus(status.code);
             }
-            else if(diagnostics.message.empty())
-                diagnostics.message = std::to_string(found) + " of " + std::to_string(indices.size())
-                                      + " solutions came from the JIT solution library";
+            const auto fromLibrary = hipblaslt_jit::generationCount() == foundBefore
+                                         ? indices.size()
+                                         : 0;
+            diagnostics.message = std::to_string(fromLibrary) + " of " + std::to_string(indices.size())
+                                  + " solutions came from the JIT solution library";
             return HIPBLAS_STATUS_SUCCESS;
         }
     }

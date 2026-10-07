@@ -283,12 +283,43 @@ namespace hipblaslt_ext::experimental
             const bool capturing = streamIsCapturing(gemm->problem.stream);
             auto       problem   = hipblaslt_jit::lowerForJit(*gemm);
             auto&      library   = hipblaslt_jit::JitLibrary::process();
-            library.beginQuery(!capturing,
-                               jit,
-                               target,
-                               workspaceLimit,
-                               excludeKernels,
-                               operation);
+            const auto backend  = jit->components().backend ? jit->components().backend->info()
+                                                           : hipblaslt_jit::BackendInfo{};
+            library.beginQuery(
+                !capturing,
+                target,
+                backend,
+                workspaceLimit,
+                excludeKernels,
+                [jit, operation, &target, workspaceLimit, &library](
+                    size_t                                 count,
+                    const std::vector<std::string>&        exclude,
+                    std::vector<int32_t>&                  produced,
+                    hipblaslt_jit::Status&                 failure) {
+                    auto components = jit->components();
+                    if(!components.store && components.backend)
+                        components.store = hipblaslt_jit::makeLibraryStore(
+                            library, components.backend->info(), hipblaslt_jit::jitCodeObjectVersion);
+                    try
+                    {
+                        const hipblaslt_jit::Jit generator(std::move(components));
+                        auto outcome = generator.generate(
+                            *operation, target, count, workspaceLimit, exclude);
+                        produced = std::move(outcome.indices);
+                        if(produced.empty())
+                            failure = outcome.failures.empty()
+                                          ? hipblaslt_jit::Status{hipblaslt_jit::Status::Code::Failed,
+                                                                  hipblaslt_jit::Stage::Publish,
+                                                                  "Nothing was published"}
+                                          : std::move(outcome.failures.front());
+                    }
+                    catch(const std::exception& error)
+                    {
+                        failure = {hipblaslt_jit::Status::Code::Failed,
+                                   hipblaslt_jit::Stage::Generate,
+                                   error.what()};
+                    }
+                });
             struct Guard
             {
                 hipblaslt_jit::JitLibrary& library;

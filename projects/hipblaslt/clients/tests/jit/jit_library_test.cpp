@@ -550,7 +550,7 @@ namespace
                 && !fs::exists(directory / "cache-key.json")
                 && !fs::exists(directory / lazyMaster(ctx.arch))));
         }
-        names.clear();
+        std::set<std::string> names;
         for(const auto& entry : fs::directory_iterator(root / "v1"))
             names.insert(entry.path().filename().string());
         {

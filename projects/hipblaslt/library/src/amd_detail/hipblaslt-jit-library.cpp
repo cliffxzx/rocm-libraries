@@ -1214,14 +1214,14 @@ namespace hipblaslt_jit
     {
         struct ActiveQuery
         {
-            bool                                    engaged = false;
-            bool                                    allowGeneration = false;
-            std::shared_ptr<const Jit>              jit;
-            DeviceTarget                            target;
-            size_t                                  workspace = 0;
-            std::vector<std::string>                exclude;
-            std::shared_ptr<const OperationRequest> operation;
-            Status                                  failure;
+            bool                     engaged = false;
+            bool                     allowGeneration = false;
+            DeviceTarget             target;
+            BackendInfo              backend;
+            size_t                   workspace = 0;
+            std::vector<std::string> exclude;
+            JitLibrary::GenerateMissing generate;
+            Status                   failure;
         };
 
         ActiveQuery& activeQuery()
@@ -1240,14 +1240,11 @@ namespace hipblaslt_jit
             using Solution = TensileLite::ContractionSolution;
             TensileLite::SolutionVector<Solution> result;
             auto&                                 query = activeQuery();
-            if(!query.engaged || !query.jit || numSolutions <= 0 || problem.groupedGemm())
+            if(!query.engaged || numSolutions <= 0 || problem.groupedGemm())
                 return result;
             auto problemCopy = problem;
             problemCopy.setWorkspaceSize(query.workspace);
-            auto components = query.jit->components();
-            if(!components.backend)
-                return result;
-            const auto key = CacheKey::make(query.target, components.backend->info(), jitCodeObjectVersion);
+            const auto key = CacheKey::make(query.target, query.backend, jitCodeObjectVersion);
             std::vector<int32_t> indices;
             query.failure = library.lookup(key,
                                            query.target.device,
@@ -1257,11 +1254,8 @@ namespace hipblaslt_jit
                                            query.exclude,
                                            indices);
             const bool miss = indices.size() < static_cast<size_t>(numSolutions);
-            if(generate && query.allowGeneration && miss && query.operation && query.failure.ok())
+            if(generate && query.allowGeneration && miss && query.generate && query.failure.ok())
             {
-                if(!components.store && components.backend)
-                    components.store = makeLibraryStore(
-                        library, components.backend->info(), jitCodeObjectVersion);
                 auto exclude = query.exclude;
                 for(auto index : indices)
                 {
@@ -1271,24 +1265,16 @@ namespace hipblaslt_jit
                         if(!excludedKernel(exclude, solution->kernelName))
                             exclude.push_back(solution->kernelName);
                 }
-                try
-                {
-                    const Jit generator(components);
-                    auto      outcome = generator.generate(*query.operation,
-                                                      query.target,
-                                                      static_cast<size_t>(numSolutions) - indices.size(),
-                                                      query.workspace,
-                                                      exclude);
-                    for(auto index : outcome.indices)
-                        if(std::find(indices.begin(), indices.end(), index) == indices.end())
-                            indices.push_back(index);
-                    if(indices.empty() && !outcome.failures.empty())
-                        query.failure = outcome.failures.front();
-                }
-                catch(const std::exception& error)
-                {
-                    query.failure = {Status::Code::Failed, Stage::Generate, error.what()};
-                }
+                std::vector<int32_t> extra;
+                query.generate(static_cast<size_t>(numSolutions) - indices.size(),
+                               exclude,
+                               extra,
+                               query.failure);
+                for(auto index : extra)
+                    if(std::find(indices.begin(), indices.end(), index) == indices.end())
+                        indices.push_back(index);
+                if(!indices.empty())
+                    query.failure = {};
             }
             if(indices.size() > static_cast<size_t>(numSolutions))
                 indices.resize(static_cast<size_t>(numSolutions));
@@ -1302,22 +1288,22 @@ namespace hipblaslt_jit
         }
     }
 
-    void JitLibrary::beginQuery(bool                                    allowGeneration,
-                                std::shared_ptr<const Jit>              jit,
-                                const DeviceTarget&                     target,
-                                size_t                                  workspace,
-                                std::vector<std::string>                excludeKernels,
-                                std::shared_ptr<const OperationRequest> operation)
+    void JitLibrary::beginQuery(bool                     allowGeneration,
+                                const DeviceTarget&      target,
+                                const BackendInfo&       backend,
+                                size_t                   workspace,
+                                std::vector<std::string> excludeKernels,
+                                GenerateMissing          generate)
     {
-        auto& query          = activeQuery();
-        query                = {};
-        query.engaged        = true;
+        auto& query           = activeQuery();
+        query                 = {};
+        query.engaged         = true;
         query.allowGeneration = allowGeneration;
-        query.jit            = std::move(jit);
-        query.target         = target;
-        query.workspace      = workspace;
-        query.exclude        = std::move(excludeKernels);
-        query.operation      = std::move(operation);
+        query.target          = target;
+        query.backend         = backend;
+        query.workspace       = workspace;
+        query.exclude         = std::move(excludeKernels);
+        query.generate        = std::move(generate);
     }
 
     void JitLibrary::endQuery()

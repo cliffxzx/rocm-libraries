@@ -391,6 +391,35 @@ namespace hipblaslt_jit::msgpack_io
         });
     }
 
+    Status writeNames(const std::vector<std::string>& names, std::vector<uint8_t>& bytes)
+    {
+        bytes.clear();
+        return guarded("Invalid JIT name list", [&] {
+            msgpack::sbuffer buffer;
+            Packer           packer(buffer);
+            packer.pack_array(static_cast<uint32_t>(names.size()));
+            for(const auto& name : names)
+                string(packer, name);
+            bytes = contents(buffer);
+        });
+    }
+
+    Status readNames(const std::vector<uint8_t>& bytes, std::vector<std::string>& names)
+    {
+        names.clear();
+        return guarded("Invalid JIT name list", [&] {
+            const auto  handle = parse(bytes, "The name list");
+            const auto& root   = handle.get();
+            if(root.type != msgpack::type::ARRAY)
+                malformed("The name list is not an array");
+            std::vector<std::string> result;
+            result.reserve(root.via.array.size);
+            for(uint32_t i = 0; i < root.via.array.size; ++i)
+                result.push_back(text(root.via.array.ptr[i], "A name"));
+            names = std::move(result);
+        });
+    }
+
     Status writeAllocator(int64_t next, std::vector<uint8_t>& bytes)
     {
         bytes.clear();
@@ -409,6 +438,105 @@ namespace hipblaslt_jit::msgpack_io
         return guarded("Invalid JIT index allocator", [&] {
             const auto handle = parse(bytes, "The allocator");
             next              = member(handle.get(), "next", "The allocator").as<int64_t>();
+        });
+    }
+
+    namespace
+    {
+        std::string optionalString(const msgpack::object& root, const char* name, bool& present)
+        {
+            present = false;
+            const auto* value = find(root, name);
+            if(!value || value->type != msgpack::type::STR)
+                return {};
+            present = true;
+            return std::string(text(*value, name));
+        }
+
+        int optionalInt(const msgpack::object& root, const char* name, bool& present, int fallback)
+        {
+            present           = false;
+            const auto* value = find(root, name);
+            if(!value
+               || (value->type != msgpack::type::POSITIVE_INTEGER
+                   && value->type != msgpack::type::NEGATIVE_INTEGER))
+                return fallback;
+            present = true;
+            return static_cast<int>(value->as<int64_t>());
+        }
+    }
+
+    Status writeCacheKey(const CacheKeyDocument& document, std::vector<uint8_t>& bytes)
+    {
+        bytes.clear();
+        return guarded("Invalid JIT cache key", [&] {
+            msgpack::sbuffer buffer;
+            Packer           packer(buffer);
+            packer.pack_map(11);
+            string(packer, "backend_id");
+            string(packer, document.backendId);
+            string(packer, "backend_version");
+            string(packer, document.backendVersion);
+            string(packer, "code_object_version");
+            packer.pack(document.codeObjectVersion);
+            string(packer, "comgr");
+            string(packer, document.comgr);
+            string(packer, "compiler_environment");
+            packer.pack_map(static_cast<uint32_t>(document.environment.size()));
+            for(const auto& [name, value] : document.environment)
+            {
+                string(packer, name);
+                string(packer, value);
+            }
+            string(packer, "isa");
+            string(packer, document.isa);
+            string(packer, "library_arch");
+            string(packer, document.libraryArch);
+            string(packer, "rocm_path");
+            string(packer, document.rocmPath);
+            string(packer, "schema");
+            packer.pack(document.schema);
+            string(packer, "target_id");
+            string(packer, document.targetId);
+            string(packer, "wavefront_size");
+            packer.pack(document.wavefrontSize);
+            bytes = contents(buffer);
+        });
+    }
+
+    Status readCacheKey(const std::vector<uint8_t>& bytes, CacheKeyDocument& document)
+    {
+        document = {};
+        return guarded("Invalid JIT cache key", [&] {
+            const auto handle = parse(bytes, "The cache key");
+            const auto& root  = handle.get();
+            if(root.type != msgpack::type::MAP)
+                malformed("The cache key is not a map");
+            bool ignored = false;
+            document.backendId      = optionalString(root, "backend_id", document.hasBackendId);
+            document.backendVersion = optionalString(root, "backend_version", document.hasBackendVersion);
+            document.codeObjectVersion
+                = optionalInt(root, "code_object_version", ignored, document.codeObjectVersion);
+            document.comgr       = optionalString(root, "comgr", ignored);
+            document.isa         = optionalString(root, "isa", document.hasIsa);
+            document.libraryArch = optionalString(root, "library_arch", document.hasLibraryArch);
+            document.rocmPath    = optionalString(root, "rocm_path", ignored);
+            document.schema      = optionalInt(root, "schema", ignored, document.schema);
+            document.targetId    = optionalString(root, "target_id", document.hasTargetId);
+            document.wavefrontSize
+                = optionalInt(root, "wavefront_size", document.hasWavefront, document.wavefrontSize);
+            if(const auto* environment = find(root, "compiler_environment");
+               environment && environment->type == msgpack::type::MAP)
+            {
+                for(uint32_t i = 0; i < environment->via.map.size; ++i)
+                {
+                    const auto& field = environment->via.map.ptr[i];
+                    if(field.key.type != msgpack::type::STR || field.val.type != msgpack::type::STR)
+                        continue;
+                    document.environment.emplace(text(field.key, "An environment name"),
+                                                 text(field.val, "An environment value"));
+                }
+            }
         });
     }
 #else
@@ -448,11 +576,27 @@ namespace hipblaslt_jit::msgpack_io
     {
         return unavailable();
     }
+    Status writeNames(const std::vector<std::string>&, std::vector<uint8_t>&)
+    {
+        return unavailable();
+    }
+    Status readNames(const std::vector<uint8_t>&, std::vector<std::string>&)
+    {
+        return unavailable();
+    }
     Status writeAllocator(int64_t, std::vector<uint8_t>&)
     {
         return unavailable();
     }
     Status readAllocator(const std::vector<uint8_t>&, int64_t&)
+    {
+        return unavailable();
+    }
+    Status writeCacheKey(const CacheKeyDocument&, std::vector<uint8_t>&)
+    {
+        return unavailable();
+    }
+    Status readCacheKey(const std::vector<uint8_t>&, CacheKeyDocument&)
     {
         return unavailable();
     }

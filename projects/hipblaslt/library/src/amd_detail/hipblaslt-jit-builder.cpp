@@ -5,7 +5,6 @@
 #include "hipblaslt-jit-component.hpp"
 #include <algorithm>
 #include <fstream>
-#include <set>
 #include <sstream>
 #include <system_error>
 
@@ -97,21 +96,12 @@ namespace hipblaslt_jit
                                              solution.hipFlags.begin(),
                                              solution.hipFlags.end());
 
-                std::vector<co::AssemblySource> assembly;
-                std::vector<co::HipSource>      hip;
-                std::set<std::string>           includes;
-                int                             wavefrontSize = 0;
+                int wavefrontSize = 0;
                 for(const auto& unit : solution.units)
                 {
-                    auto source = text(unit.bytes);
                     if(unit.kind == BuildUnit::Kind::Hip)
-                    {
-                        for(const auto& include : unit.includes)
-                            if(includes.insert(include.name).second)
-                                options.includes.push_back({include.name, text(include.bytes)});
-                        hip.push_back({unit.name, std::move(source)});
                         continue;
-                    }
+                    const auto source   = text(unit.bytes);
                     const auto declared = declaredTarget(source);
                     if(!declared.empty() && !compatible(declared, target))
                         return failure(request,
@@ -124,10 +114,13 @@ namespace hipblaslt_jit
                         return failure(
                             request, solution, "Assembly units disagree on the wavefront size", {});
                     wavefrontSize = wave != 0 ? wave : wavefrontSize;
-                    assembly.push_back({unit.name, std::move(source)});
                 }
                 const auto& names = solution.kernelNames;
-                if(solution.units.empty() || names.empty()
+                std::vector<BuildUnit> mainUnits;
+                std::vector<BuildUnit> helpers;
+                for(const auto& unit : solution.units)
+                    (unit.role == BuildUnit::Role::Helper ? helpers : mainUnits).push_back(unit);
+                if(mainUnits.empty() || names.empty()
                    || std::any_of(names.begin(), names.end(), [](const std::string& name) {
                           return name.empty();
                       }))
@@ -136,51 +129,63 @@ namespace hipblaslt_jit
                                    "A generated solution needs source units and kernel names",
                                    {});
 
-                std::string                  log;
-                std::vector<co::Relocatable> objects;
-                if(!assembly.empty())
-                {
-                    auto assemblyTarget          = target;
-                    assemblyTarget.wavefrontSize = wavefrontSize;
-                    auto result = co::assembleRelocatables(assembly, assemblyTarget, options);
-                    log += result.log;
-                    if(!result.ok())
-                        return failure(request, solution, "comgr could not assemble", log);
-                    objects = std::move(result.objects);
-                }
-                if(!hip.empty())
-                {
-                    auto result = co::compileHipRelocatables(hip, target, options);
-                    log += result.log;
-                    if(!result.ok())
-                        return failure(request, solution, "comgr could not compile HIP", log);
-                    for(auto& object : result.objects)
-                        objects.push_back(std::move(object));
-                }
-                auto linked = co::link(objects, target, options);
-                log += linked.log;
+                auto assemblyTarget          = target;
+                assemblyTarget.wavefrontSize = wavefrontSize;
+                auto linked = co::build(mainUnits, assemblyTarget, options);
                 if(!linked.ok())
-                    return failure(request, solution, "comgr could not link", log);
+                    return failure(request, solution, "comgr could not build the code object", linked.log);
 
-                const auto metadata = co::readMetadata(linked.bytes);
+                const auto metadata = co::inspect(linked.bytes);
                 if(!metadata.ok())
-                    return failure(
-                        request, solution, "Cannot read the built code object", log + metadata.log);
-                if(metadata.metadata.isaName != target.isaName())
                     return failure(request,
                                    solution,
-                                   "Built code object targets " + metadata.metadata.isaName
-                                       + ", not " + target.isaName(),
-                                   log);
-                const auto& kernels = metadata.metadata.kernelNames;
+                                   "Cannot read the built code object",
+                                   linked.log + metadata.log);
+                if(metadata.isaName != target.isaName())
+                    return failure(request,
+                                   solution,
+                                   "Built code object targets " + metadata.isaName + ", not "
+                                       + target.isaName(),
+                                   linked.log);
+                if(metadata.codeObjectVersion != request.codeObjectVersion)
+                    return failure(request,
+                                   solution,
+                                   "Built code object is version "
+                                       + std::to_string(metadata.codeObjectVersion) + ", not "
+                                       + std::to_string(request.codeObjectVersion),
+                                   linked.log);
                 for(const auto& name : names)
-                    if(std::find(kernels.begin(), kernels.end(), name) == kernels.end())
+                    if(std::find(metadata.kernelNames.begin(), metadata.kernelNames.end(), name)
+                       == metadata.kernelNames.end())
                         return failure(request,
                                        solution,
                                        "Built code object does not define kernel " + name,
-                                       log);
+                                       linked.log);
                 built.generated = solution;
                 built.object.bytes.assign(linked.bytes.begin(), linked.bytes.end());
+                for(const auto& helper : helpers)
+                {
+                    if(helper.name.empty())
+                        return failure(request, solution, "A helper unit has no name", {});
+                    auto helperObject = co::build({helper}, assemblyTarget, options);
+                    if(!helperObject.ok())
+                        return failure(request,
+                                       solution,
+                                       "comgr could not build helper " + helper.name,
+                                       helperObject.log);
+                    const auto helperMeta = co::inspect(helperObject.bytes);
+                    if(!helperMeta.ok() || helperMeta.isaName != target.isaName()
+                       || helperMeta.codeObjectVersion != request.codeObjectVersion)
+                        return failure(request,
+                                       solution,
+                                       "Helper " + helper.name + " is not a code object for "
+                                           + target.isaName(),
+                                       helperObject.log + helperMeta.log);
+                    built.helpers.push_back(
+                        {helper.name,
+                         CodeObject{std::vector<uint8_t>(helperObject.bytes.begin(),
+                                                         helperObject.bytes.end())}});
+                }
                 return {};
             }
 

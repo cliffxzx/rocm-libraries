@@ -13,9 +13,9 @@
 namespace hipblaslt_jit
 {
     // True when this process has a backend that publishes into the JIT solution
-    // library. That backend replays the bundles HIPBLASLT_JIT_TEST_REPLAY lists,
-    // or, when that variable is unset, the HipKittens backend of a HipKittens
-    // build. A build with neither returns false.
+    // library. A HipKittens build uses that backend. Otherwise the backend
+    // replays the committed kernels when they are compiled in. A build with
+    // neither returns false.
     bool jitHeuristicLibrary();
 
     // One warning per process when a query would consult JIT and no library is

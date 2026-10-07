@@ -90,12 +90,12 @@ once and leaves the mode off.
 | `1` | The override file, then the Equality provider rows, then the JIT library, then the other provider rows, then the `getAllSolutions` fill. Each source fills only the remaining request, and a kernel already returned is skipped. |
 | `2` | The JIT library only. The override file is not read. A problem the library does not solve returns success with no algorithms. |
 
-The process backend replays source bundles when `HIPBLASLT_JIT_TEST_REPLAY`
-names them, a whitespace-separated list read once per process. When that
-variable is unset, a build with the HipKittens backend uses it instead. A JIT
-build with neither warns once: mode `1` leaves the query unchanged, and mode
-`2` returns no algorithms. Either backend implements generation only. Every
-query publishes through the JIT solution library.
+A HipKittens build publishes through that backend. A JIT build with no
+HipKittens backend replays the committed kernels under `clients/tests/jit/data`
+when that tree is compiled in. Those queries publish into the JIT solution
+library, and a later query in the process reuses the index. A build with
+neither warns once: mode `1` leaves the query unchanged, and mode `2` returns
+no algorithms. Either backend implements generation only.
 
 The algorithms those queries return are JIT solution library indices, from
 2^30, and they run through the same path as a prebuilt index.
@@ -173,8 +173,8 @@ The implementations are:
   It compiles the gfx950 TN templates in `library/src/amd_detail/hipkittens`
   with comgr's generic HIP path. The HipKittens headers are staged next to
   the library; `HIPBLASLT_JIT_HIPKITTENS_PATH` overrides that directory.
-  `HIPBLASLT_JIT_TEST_REPLAY` still selects the replay backend. A build
-  without the option keeps replay as the only process backend.
+  Heuristic queries use this backend when it is compiled in. A build without
+  the option replays the committed kernels.
 
 ### Build
 

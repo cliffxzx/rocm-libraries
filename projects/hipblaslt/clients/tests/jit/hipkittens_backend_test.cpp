@@ -9,8 +9,6 @@
 
 #include <chrono>
 #include <cstdint>
-#include <cstdlib>
-#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -327,7 +325,6 @@ namespace
 
 TEST_CASE("the HipKittens gfx950 backend", "[jit-gpu]")
 {
-    unsetenv("HIPBLASLT_JIT_TEST_REPLAY");
     int             device = -1;
     hipDeviceProp_t properties{};
     HIP(hipGetDevice(&device));
@@ -336,12 +333,7 @@ TEST_CASE("the HipKittens gfx950 backend", "[jit-gpu]")
         INFO((std::string("need gfx950, got ") + properties.gcnArchName));
         REQUIRE((std::string(properties.gcnArchName).rfind("gfx950", 0) == 0));
     }
-    const char* libraryRoot = std::getenv("HIPBLASLT_JIT_LIBRARY_PATH");
-    {
-        INFO(("Set HIPBLASLT_JIT_LIBRARY_PATH to a scratch directory"));
-        REQUIRE((libraryRoot && *libraryRoot));
-    }
-    std::filesystem::remove_all(std::filesystem::u8path(libraryRoot));
+    hipblaslt_jit_test::LibraryScratch library("hipkittens");
 
     checkResources();
     hipblasLtHandle_t     handle{};

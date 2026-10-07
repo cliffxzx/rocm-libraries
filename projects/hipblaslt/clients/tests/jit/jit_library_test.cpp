@@ -177,9 +177,9 @@ namespace
     }
 
     // Every master row is mapped, and every mapped index loads with its code object.
-    void consistent(const fs::path&              directory,
-                    const TensileLite::Hardware& hardware,
-                    const std::string&           arch)
+    void consistentSlice(const fs::path&              directory,
+                         const TensileLite::Hardware& hardware,
+                         const std::string&           arch)
     {
         std::vector<std::string> rows;
         ok(hj::msgpack_io::readMasterPrefixes(read(directory / lazyMaster(arch)), rows),
@@ -216,6 +216,21 @@ namespace
             INFO(("Master row " + row + " is not mapped"));
             REQUIRE((mapped.count(row)));
         }
+    }
+
+    // The key directory, and each slice under it. A query's master lives in one slice.
+    void consistent(const fs::path&              directory,
+                    const TensileLite::Hardware& hardware,
+                    const std::string&           arch)
+    {
+        if(fs::is_regular_file(directory / lazyMaster(arch)))
+            consistentSlice(directory, hardware, arch);
+        std::error_code error;
+        if(!fs::exists(directory / "slices", error))
+            return;
+        for(const auto& entry : fs::recursive_directory_iterator(directory / "slices"))
+            if(entry.is_directory() && fs::is_regular_file(entry.path() / lazyMaster(arch)))
+                consistentSlice(entry.path(), hardware, arch);
     }
 
     // Names, modes, sizes and modification times of everything under root.
@@ -522,15 +537,18 @@ namespace
         const auto directory = library.directory(key);
         const auto prefix    = hj::entryPrefix(
             hj::problemTypeKey(problem), ctx.entry.kernel, hj::problemSizes(problem));
+        const auto slice = directory / "slices" / hj::sliceKey(problem);
         {
             INFO(("Unexpected key directory contents"));
-            REQUIRE((fs::is_regular_file(directory / lazyMaster(ctx.arch))
-                && fs::is_regular_file(directory / lazyMapping(ctx.arch))
+            REQUIRE((fs::is_regular_file(slice / lazyMaster(ctx.arch))
+                && fs::is_regular_file(slice / lazyMapping(ctx.arch))
                 && fs::is_regular_file(directory / "cache-key.msgpack")
+                && fs::is_regular_file(directory / "indices.msgpack")
                 && fs::is_directory(directory / "staging")
-                && fs::is_regular_file(directory / (prefix + ".co"))
-                && fs::is_regular_file(directory / (prefix + ".dat"))
-                && !fs::exists(directory / "cache-key.json")));
+                && fs::is_regular_file(slice / (prefix + ".co"))
+                && fs::is_regular_file(slice / (prefix + ".dat"))
+                && !fs::exists(directory / "cache-key.json")
+                && !fs::exists(directory / lazyMaster(ctx.arch))));
         }
         names.clear();
         for(const auto& entry : fs::directory_iterator(root / "v1"))
@@ -556,7 +574,7 @@ namespace
         }
         {
             INFO(("The code object was not stored unchanged"));
-            REQUIRE((read(directory / (prefix + ".co")) == built(ctx.entry).first.object.bytes));
+            REQUIRE((read(slice / (prefix + ".co")) == built(ctx.entry).first.object.bytes));
         }
         int64_t next = 0;
         ok(hj::msgpack_io::readAllocator(read(root / "v1" / "allocator.dat"), next), "allocator");
@@ -565,7 +583,7 @@ namespace
             REQUIRE((next == base + 1));
         }
 
-        const auto master = stock(directory, ctx.arch);
+        const auto master = stock(slice, ctx.arch);
         {
             INFO(("Unexpected index mapping"));
             REQUIRE((master->libraryMapping == std::map<int, std::string>{{base, prefix}}));
@@ -719,13 +737,14 @@ namespace
         const auto collided = publish(library, key, gemm(2048), {a})[0];
         std::vector<uint8_t> other;
         ok(hj::msgpack_io::rewriteEntryIndex(b.bytes, 0, collided, other), "rewrite");
-        ok(hj::files::writeAtomically(directory / "staging", directory / (prefix + ".dat"), other),
+        const auto slice = directory / "slices" / hj::sliceKey(gemm(2048));
+        ok(hj::files::writeAtomically(directory / "staging", slice / (prefix + ".dat"), other),
            "replace entry");
         hj::JitLibrary reopened(root);
         const auto     renamedIndex = publish(reopened, key, gemm(2048), {a})[0];
         {
             INFO(("The same identity allocated another index"));
-            REQUIRE((renamedIndex == collided && !fs::exists(directory / (prefix + "_1.dat"))));
+            REQUIRE((renamedIndex == collided && !fs::exists(slice / (prefix + "_1.dat"))));
         }
         consistent(directory, ctx.hardware, ctx.arch);
         std::cout << "PASS deduplication, collisions, publication order, top-N and exclusions\n";
@@ -850,7 +869,8 @@ namespace
         const auto prefix = hj::entryPrefix(
             hj::problemTypeKey(gemm(256)), ctx.entry.kernel, hj::problemSizes(gemm(256)));
         ok(hj::msgpack_io::rewriteEntryIndex(ctx.entry.bytes, 0, 7, bytes), "rewrite");
-        ok(hj::files::writeAtomically(directory / "staging", directory / (prefix + ".dat"), bytes),
+        const auto slice = directory / "slices" / hj::sliceKey(gemm(256));
+        ok(hj::files::writeAtomically(directory / "staging", slice / (prefix + ".dat"), bytes),
            "tamper");
         hj::JitLibrary reopened(root);
         {
@@ -1204,7 +1224,7 @@ namespace
             REQUIRE((indices.size() == 1));
         }
         const auto directory = root / "v1" / key.directoryName();
-        const auto master    = stock(directory, ctx.arch);
+        const auto master    = stock(directory / "slices" / hj::sliceKey(gemm(256)), ctx.arch);
         std::set<int32_t> mapped;
         for(const auto& [index, prefix] : master->libraryMapping)
             mapped.insert(index);

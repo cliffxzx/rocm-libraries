@@ -66,6 +66,10 @@ namespace hipblaslt_jit
     std::string problemTypeKey(const TensileLite::ContractionProblemGemm& problem);
     // problem.size(i) for every index; a published entry matches only these sizes.
     std::vector<size_t> problemSizes(const TensileLite::ContractionProblemGemm& problem);
+    // One lazy slice: operation identifier, datatypes, the TensileLite scale
+    // suffix (scalar or vector UseScaleAB, MX block and type) and the epilogue
+    // flags that change the kernel family. Sizes stay inside the slice.
+    std::string sliceKey(const TensileLite::ContractionProblemGemm& problem);
     // Filesystem-safe literal of the kernel, the problem type and the sizes.
     // The same identity always names the same entry, so a second publish reuses
     // that entry's index.
@@ -89,10 +93,11 @@ namespace hipblaslt_jit
     extern void (*publishStepHook)(PublishStep);
 #endif
 
-    // A persistent library of generated solutions. Each directory is a
-    // TensileLite lazy-loading library that the stock loader reads: a master
-    // with one row per entry, matching only the entry's ProblemType and exact
-    // sizes, an index mapping, and one entry file and code object per solution.
+    // A persistent library of generated solutions. Each directory holds one
+    // slice per kernel family. A query opens that slice only: a TensileLite
+    // lazy master, its index mapping, and one entry and code object per
+    // solution, matching the full ProblemType and the exact sizes. Shared HIP
+    // helpers live beside the slices, one code object per backend id and name.
     // Library files are MessagePack, including cache-key.msgpack. A solution
     // whose code-object version or kernarg version this build cannot run is
     // skipped; the rest of the library still loads.

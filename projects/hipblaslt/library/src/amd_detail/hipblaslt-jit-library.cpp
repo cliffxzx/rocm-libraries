@@ -170,8 +170,9 @@ namespace hipblaslt_jit
             return true;
         }
 
-        // ELF ABI version (e_ident[EI_ABIVERSION] is code object version - 2),
-        // or -1 when the file is not an AMDGPU ELF this build can inspect.
+        // ELF ABI version (e_ident[EI_ABIVERSION] is code object version - 2).
+        // -1 when the file is missing or is an ELF this build cannot run.
+        // -2 when the bytes are not an AMDGPU ELF, so there is no version to reject.
         int codeObjectVersionOf(const fs::path& path)
         {
             std::ifstream input(path, std::ios::binary);
@@ -179,7 +180,7 @@ namespace hipblaslt_jit
             if(!input.read(reinterpret_cast<char*>(elf), sizeof(elf)))
                 return -1;
             if(std::memcmp(elf, "\x7f" "ELF", 4) != 0 || elf[4] != 2 || elf[5] != 1)
-                return -1;
+                return -2;
             constexpr unsigned char amdhsaAbi = 64;
             if(elf[7] != amdhsaAbi)
                 return -1;
@@ -200,6 +201,10 @@ namespace hipblaslt_jit
                 return false;
             const int codeObject
                 = codeObjectVersionOf(directory / solution.codeObjectFilename.load());
+            // A placeholder that is not an AMDGPU ELF has no code-object version.
+            // An unreadable file, or an ELF whose version this build cannot run, is skipped.
+            if(codeObject == -2)
+                return true;
             return codeObject >= 4 && codeObject <= 6;
         }
 
